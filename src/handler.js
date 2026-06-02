@@ -1,5 +1,8 @@
-const fs = require('fs');
-const path = require('path');
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ==== Configurações ====
 
@@ -565,4 +568,4 @@ function iniciarAvisos(client) {
   }, 60 * 1000);
 }
 
-module.exports = { handleMessage, iniciarAvisos };
+export { handleMessage, iniciarAvisos };

@@ -1,188 +1,170 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
-const { handleMessage, iniciarAvisos } = require('./src/handler');
+import makeWASocket, {
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
+  Browsers,
+} from '@whiskeysockets/baileys';
+import qrcode from 'qrcode-terminal';
+import express from 'express';
+import { createReadStream, readFile, existsSync, mkdirSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { handleMessage, iniciarAvisos } from './src/handler.js';
 
-const express = require('express');
-const path = require('path');
-const fs = require('fs');
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
-process.on('uncaughtException', (err) => {
-  console.error('[ERRO] Exceção não tratada:', err);
-});
+process.on('uncaughtException', (err) => console.error('[ERRO] Exceção:', err));
+process.on('unhandledRejection', (err) => console.error('[ERRO] Promise:', err));
 
-process.on('unhandledRejection', (err) => {
-  console.error('[ERRO] Promise rejeitada:', err);
-});
+/* ========== EXPRESS ========== */
 
 const app = express();
+app.use(express.static(join(__dirname, 'public')));
 
-app.use(express.static(path.join(__dirname, 'public')));
-
-app.get('/', (_req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'reservas.html'));
-});
-
+app.get('/', (_req, res) => res.sendFile(join(__dirname, 'public', 'reservas.html')));
 app.get('/health', (_req, res) => res.status(200).send('ok'));
 
 app.get('/api/reservas', (_req, res) => {
-  fs.readFile(path.join(__dirname, 'public/reservas.json'), 'utf8', (err, data) => {
-    if (err) {
-      console.error('[API] Erro ao ler reservas.json:', err);
-      return res.status(500).json({ error: 'Erro ao carregar reservas' });
-    }
-    try {
-      res.json(JSON.parse(data));
-    } catch (e) {
-      console.error('[API] JSON inválido:', e);
-      res.status(500).json({ error: 'JSON inválido' });
-    }
+  readFile(join(__dirname, 'public/reservas.json'), 'utf8', (err, data) => {
+    if (err) return res.status(500).json({ error: 'Erro ao carregar reservas' });
+    try { res.json(JSON.parse(data)); }
+    catch { res.status(500).json({ error: 'JSON inválido' }); }
   });
 });
 
-app.get('/api/status', (_req, res) => {
-  res.json({ online: clientInitialized });
-});
+app.get('/api/status', (_req, res) => res.json({ online: isConnected }));
 
 const PORT = Number(process.env.PORT || 3000);
-console.log('[BOOT] PORT:', PORT);
-
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`[SITE] Servidor rodando em http://0.0.0.0:${PORT}`);
-  startClient();
+  startBot();
 });
 
-/* ========== WHATSAPP ========== */
+/* ========== WHATSAPP (Baileys) ========== */
 
-let clientInitialized = false;
-let isReconnecting = false;
-let client;
+let isConnected = false;
+let sock = null;
 let retryCount = 0;
 const MAX_RETRIES = 10;
 
-// Args otimizados para ambiente container/cloud (sem --single-process)
-const PUPPETEER_ARGS = [
-  '--no-sandbox',
-  '--disable-setuid-sandbox',
-  '--disable-dev-shm-usage',
-  '--disable-gpu',
-  '--disable-software-rasterizer',
-  '--disable-accelerated-2d-canvas',
-  '--no-first-run',
-  '--no-zygote',
-  '--disable-extensions',
-  '--disable-background-networking',
-  '--disable-default-apps',
-  '--disable-sync',
-  '--disable-translate',
-  '--hide-scrollbars',
-  '--metrics-recording-only',
-  '--mute-audio',
-  '--safebrowsing-disable-auto-update',
-];
+// Pasta onde a sessão autenticada fica salva
+const AUTH_DIR = join(__dirname, 'auth_info');
+if (!existsSync(AUTH_DIR)) mkdirSync(AUTH_DIR, { recursive: true });
 
-async function startClient() {
-  if (clientInitialized || isReconnecting) return;
-  isReconnecting = true;
-
-  console.log(`[STATUS] Iniciando cliente... (tentativa ${retryCount + 1}/${MAX_RETRIES})`);
-
-  client = new Client({
-    authStrategy: new LocalAuth({ clientId: 'bot-session' }),
-    puppeteer: {
-      headless: true,
-      args: PUPPETEER_ARGS,
-    },
-    // Tempo extra para o contexto do Chromium estabilizar antes da injeção
-    restartOnAuthFail: true,
-  });
-
-  const clientAdapter = {
-    sendMessage: async (to, text) => {
-      try {
-        const jid = to.endsWith('@s.whatsapp.net')
-          ? to.replace('@s.whatsapp.net', '@c.us')
-          : to;
-        await client.sendMessage(jid, text);
-      } catch (e) {
-        console.error('[BOT] Erro ao enviar mensagem:', e);
-      }
-    },
-  };
-
-  client.on('qr', (qr) => {
-    retryCount = 0; // QR apareceu → Chromium funcionando, reseta contador
-    console.log('[STATUS] Escaneie o QR Code abaixo:');
-    qrcode.generate(qr, { small: true });
-  });
-
-  client.on('authenticated', () => {
-    console.log('[STATUS] Autenticado com sucesso!');
-    retryCount = 0;
-  });
-
-  client.on('auth_failure', (msg) => {
-    console.error('[STATUS] Falha de autenticação:', msg);
-  });
-
-  client.on('change_state', (state) => {
-    console.log('[STATUS] Estado de conexão:', state);
-  });
-
-  client.on('ready', () => {
-    console.log('[STATUS] BOT WHATSAPP ONLINE E PRONTO');
-    clientInitialized = true;
-    isReconnecting = false;
-    retryCount = 0;
-    iniciarAvisos(clientAdapter);
-  });
-
-  client.on('disconnected', async (reason) => {
-    console.log('[STATUS] WhatsApp desconectado. Motivo:', reason);
-    clientInitialized = false;
-    isReconnecting = true;
-
-    try {
-      await client.destroy();
-    } catch (err) {
-      console.error('[ERRO] Erro ao destruir cliente:', err);
-    }
-
-    const delay = 5000;
-    console.log(`[STATUS] Reiniciando em ${delay / 1000}s...`);
-    setTimeout(() => {
-      isReconnecting = false;
-      startClient();
-    }, delay);
-  });
-
-  client.on('message', async (message) => {
-    try {
-      await handleMessage(clientAdapter, message);
-    } catch (e) {
-      console.error('[ERRO handleMessage]', e);
-    }
-  });
-
+async function startBot() {
   try {
-    console.log('[STATUS] Inicializando Client...');
-    await client.initialize();
-  } catch (err) {
-    console.error('[ERRO] Falha ao inicializar o Client:', err.message);
-    isReconnecting = false;
+    const { version } = await fetchLatestBaileysVersion();
+    console.log(`[BAILEYS] Versão do protocolo WA: ${version.join('.')}`);
 
-    // Retry com backoff exponencial (máx 5 min)
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+
+    sock = makeWASocket({
+      version,
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, console),
+      },
+      browser: Browsers.ubuntu('Chrome'),
+      printQRInTerminal: false,  // gerenciamos o QR manualmente abaixo
+      getMessage: async () => ({ conversation: '' }), // obrigatório no v7
+    });
+
+    // Salva credenciais sempre que atualizadas
+    sock.ev.on('creds.update', saveCreds);
+
+    // Adaptador: interface compatível com o handler.js
+    const clientAdapter = {
+      sendMessage: async (jid, text) => {
+        try {
+          const dest = jid.endsWith('@s.whatsapp.net') ? jid : jid;
+          await sock.sendMessage(dest, { text });
+        } catch (e) {
+          console.error('[BOT] Erro ao enviar mensagem:', e.message);
+        }
+      },
+    };
+
+    // Conexão / QR / reconexão
+    sock.ev.on('connection.update', async (update) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
+        console.log('[STATUS] Escaneie o QR Code abaixo:');
+        qrcode.generate(qr, { small: true });
+        retryCount = 0;
+      }
+
+      if (connection === 'open') {
+        console.log('[STATUS] BOT WHATSAPP ONLINE E PRONTO ✓');
+        isConnected = true;
+        retryCount = 0;
+        iniciarAvisos(clientAdapter);
+      }
+
+      if (connection === 'close') {
+        isConnected = false;
+        const code = lastDisconnect?.error?.output?.statusCode;
+        const shouldReconnect = code !== DisconnectReason.loggedOut;
+
+        console.log(`[STATUS] Conexão encerrada. Código: ${code} | Reconectar: ${shouldReconnect}`);
+
+        if (shouldReconnect) {
+          if (retryCount < MAX_RETRIES) {
+            retryCount++;
+            const delay = Math.min(8000 * retryCount, 300000);
+            console.log(`[STATUS] Retry ${retryCount}/${MAX_RETRIES} em ${delay / 1000}s...`);
+            setTimeout(startBot, delay);
+          } else {
+            console.error('[ERRO] Número máximo de tentativas atingido.');
+          }
+        } else {
+          console.log('[STATUS] Sessão encerrada (logout). Apague a pasta auth_info e reinicie para parear novamente.');
+        }
+      }
+    });
+
+    // Recebe mensagens
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (type !== 'notify') return;
+
+      for (const msg of messages) {
+        // Ignora mensagens do próprio bot e de status
+        if (msg.key.fromMe) continue;
+        if (msg.key.remoteJid === 'status@broadcast') continue;
+
+        // Extrai texto da mensagem (suporta texto simples e resposta citada)
+        const body =
+          msg.message?.conversation ||
+          msg.message?.extendedTextMessage?.text ||
+          msg.message?.imageMessage?.caption ||
+          msg.message?.videoMessage?.caption ||
+          '';
+
+        if (!body.trim()) continue;
+
+        // Monta objeto compatível com o handler.js
+        const msgAdapter = {
+          body,
+          from: msg.key.remoteJid,
+          author: msg.key.participant || msg.key.remoteJid, // participant em grupos
+        };
+
+        try {
+          await handleMessage(clientAdapter, msgAdapter);
+        } catch (e) {
+          console.error('[ERRO handleMessage]', e);
+        }
+      }
+    });
+
+  } catch (err) {
+    console.error('[ERRO] Falha ao iniciar bot:', err.message);
     if (retryCount < MAX_RETRIES) {
       retryCount++;
-      const delay = Math.min(10000 * retryCount, 300000); // 10s, 20s, 30s ... 5min
+      const delay = Math.min(8000 * retryCount, 300000);
       console.log(`[STATUS] Retry ${retryCount}/${MAX_RETRIES} em ${delay / 1000}s...`);
-
-      try { await client.destroy(); } catch (_) {}
-
-      setTimeout(() => {
-        startClient();
-      }, delay);
-    } else {
-      console.error('[ERRO] Número máximo de tentativas atingido. Verifique o ambiente.');
+      setTimeout(startBot, delay);
     }
   }
 }
@@ -190,36 +172,20 @@ async function startClient() {
 // Monitoramento de memória
 setInterval(async () => {
   const memMB = Math.round(process.memoryUsage().rss / 1024 / 1024);
+  if (process.env.DEBUG) console.log(`[MEMÓRIA] RAM: ${memMB}MB`);
 
-  if (process.env.DEBUG) {
-    console.log(`[MEMÓRIA] RAM usada: ${memMB}MB`);
-  }
-
-  if (memMB > 450) {
-    console.warn(`[ALERTA] RAM alta (${memMB}MB). Reiniciando cliente...`);
-    clientInitialized = false;
-    isReconnecting = true;
-
-    if (client) {
-      try {
-        await client.destroy();
-      } catch (e) {
-        console.error('[ERRO] Falha ao destruir client:', e);
-      }
-    }
-
-    setTimeout(() => {
-      console.log('[STATUS] Reiniciando cliente após limpeza de memória...');
-      isReconnecting = false;
-      startClient();
-    }, 5000);
+  if (memMB > 450 && sock) {
+    console.warn(`[ALERTA] RAM alta (${memMB}MB). Reconectando...`);
+    isConnected = false;
+    try { sock.end(undefined); } catch (_) {}
+    setTimeout(startBot, 5000);
   }
 }, 60000);
 
 // Keep-alive
 setInterval(() => {
-  if (clientInitialized && client && client.info) {
-    console.log(`[KEEP-ALIVE] Bot ativo — ${client.info.pushname || '...'}`);
+  if (isConnected) {
+    console.log(`[KEEP-ALIVE] Bot ativo — ${new Date().toLocaleTimeString('pt-BR')}`);
   } else {
     console.log(`[KEEP-ALIVE] ${new Date().toISOString()} — http ativo, bot desconectado`);
   }
