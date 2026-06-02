@@ -39,7 +39,6 @@ app.get('/api/reservas', (_req, res) => {
   });
 });
 
-// Status do bot exposto para o frontend
 app.get('/api/status', (_req, res) => {
   res.json({ online: clientInitialized });
 });
@@ -57,26 +56,44 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 let clientInitialized = false;
 let isReconnecting = false;
 let client;
+let retryCount = 0;
+const MAX_RETRIES = 10;
+
+// Args otimizados para ambiente container/cloud (sem --single-process)
+const PUPPETEER_ARGS = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-dev-shm-usage',
+  '--disable-gpu',
+  '--disable-software-rasterizer',
+  '--disable-accelerated-2d-canvas',
+  '--no-first-run',
+  '--no-zygote',
+  '--disable-extensions',
+  '--disable-background-networking',
+  '--disable-default-apps',
+  '--disable-sync',
+  '--disable-translate',
+  '--hide-scrollbars',
+  '--metrics-recording-only',
+  '--mute-audio',
+  '--safebrowsing-disable-auto-update',
+];
 
 async function startClient() {
   if (clientInitialized || isReconnecting) return;
   isReconnecting = true;
 
+  console.log(`[STATUS] Iniciando cliente... (tentativa ${retryCount + 1}/${MAX_RETRIES})`);
+
   client = new Client({
     authStrategy: new LocalAuth({ clientId: 'bot-session' }),
     puppeteer: {
       headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-extensions',
-      ],
+      args: PUPPETEER_ARGS,
     },
+    // Tempo extra para o contexto do Chromium estabilizar antes da injeção
+    restartOnAuthFail: true,
   });
 
   const clientAdapter = {
@@ -93,12 +110,14 @@ async function startClient() {
   };
 
   client.on('qr', (qr) => {
+    retryCount = 0; // QR apareceu → Chromium funcionando, reseta contador
     console.log('[STATUS] Escaneie o QR Code abaixo:');
     qrcode.generate(qr, { small: true });
   });
 
   client.on('authenticated', () => {
     console.log('[STATUS] Autenticado com sucesso!');
+    retryCount = 0;
   });
 
   client.on('auth_failure', (msg) => {
@@ -113,13 +132,14 @@ async function startClient() {
     console.log('[STATUS] BOT WHATSAPP ONLINE E PRONTO');
     clientInitialized = true;
     isReconnecting = false;
+    retryCount = 0;
     iniciarAvisos(clientAdapter);
   });
 
   client.on('disconnected', async (reason) => {
     console.log('[STATUS] WhatsApp desconectado. Motivo:', reason);
     clientInitialized = false;
-    isReconnecting = true; // seta ANTES de destruir para evitar reconexão duplicada
+    isReconnecting = true;
 
     try {
       await client.destroy();
@@ -127,11 +147,12 @@ async function startClient() {
       console.error('[ERRO] Erro ao destruir cliente:', err);
     }
 
-    console.log('[STATUS] Reiniciando em 5 segundos...');
+    const delay = 5000;
+    console.log(`[STATUS] Reiniciando em ${delay / 1000}s...`);
     setTimeout(() => {
       isReconnecting = false;
       startClient();
-    }, 5000);
+    }, delay);
   });
 
   client.on('message', async (message) => {
@@ -146,8 +167,23 @@ async function startClient() {
     console.log('[STATUS] Inicializando Client...');
     await client.initialize();
   } catch (err) {
-    console.error('[ERRO] Erro ao inicializar o Client:', err);
+    console.error('[ERRO] Falha ao inicializar o Client:', err.message);
     isReconnecting = false;
+
+    // Retry com backoff exponencial (máx 5 min)
+    if (retryCount < MAX_RETRIES) {
+      retryCount++;
+      const delay = Math.min(10000 * retryCount, 300000); // 10s, 20s, 30s ... 5min
+      console.log(`[STATUS] Retry ${retryCount}/${MAX_RETRIES} em ${delay / 1000}s...`);
+
+      try { await client.destroy(); } catch (_) {}
+
+      setTimeout(() => {
+        startClient();
+      }, delay);
+    } else {
+      console.error('[ERRO] Número máximo de tentativas atingido. Verifique o ambiente.');
+    }
   }
 }
 
@@ -162,7 +198,7 @@ setInterval(async () => {
   if (memMB > 450) {
     console.warn(`[ALERTA] RAM alta (${memMB}MB). Reiniciando cliente...`);
     clientInitialized = false;
-    isReconnecting = true; // seta ANTES de destruir
+    isReconnecting = true;
 
     if (client) {
       try {
