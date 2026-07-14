@@ -50,7 +50,7 @@ const PORT = Number(process.env.PORT || 3000);
 
 const credentialsManager = createAuthCredentialsManager({
   onRotate: ({ path: authPath, password }) => {
-    const host = process.env.PUBLIC_URL || `http://localhost:${PORT}`;
+    const host = process.env.PUBLIC_URL || 'https://reservascmc.squareweb.app';
     console.log('[AUTH] Bot desconectado. Acesse para reautenticar:');
     console.log(`[AUTH] URL: ${host}${authPath}`);
     console.log(`[AUTH] Senha: ${password}`);
