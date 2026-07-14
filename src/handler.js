@@ -201,7 +201,7 @@ Minhas Reservas
 Listar Reservas
 \`\`\`
 
-🌐 Acompanhe também em: https://reservascmc.squareweb.app/`;
+🌐 Acompanhe também em: https://reservascmc2026.squareweb.app/`;
 
 // ==== Handler principal ====
 
@@ -248,7 +248,7 @@ async function handleMessage(client, message) {
           `👥 *Pessoas:* ${reservaPendente.qnt}\n` +
           `🔒 *Código:* ${reservaPendente.codigo}\n\n` +
           `ℹ️ Para consultar: envie *Minhas Reservas*\n` +
-          `🌐 https://reservascmc.squareweb.app/`
+          `🌐 https://reservascmc2026.squareweb.app/`
         );
       });
       return;
@@ -395,7 +395,7 @@ async function handleMessage(client, message) {
 
       if (index === -1) {
         await client.sendMessage(message.from,
-          `⚠️ Código *${codigo}* não encontrado ou já cancelado.\n🌐 https://reservascmc.squareweb.app/`
+          `⚠️ Código *${codigo}* não encontrado ou já cancelado.\n🌐 https://reservascmc2026.squareweb.app/`
         );
         return;
       }
@@ -414,7 +414,7 @@ async function handleMessage(client, message) {
       await client.sendMessage(message.from,
         `❌ *Reserva ${codigo} cancelada com sucesso.*\n\n` +
         `ℹ️ Para ver suas reservas: *Minhas Reservas*\n` +
-        `🌐 https://reservascmc.squareweb.app/`
+        `🌐 https://reservascmc2026.squareweb.app/`
       );
     });
     return;
@@ -452,7 +452,7 @@ async function handleMessage(client, message) {
     ).join('\n\n');
 
     await client.sendMessage(message.from,
-      `📅 *Suas próximas reservas:*\n\n${linhas}\n\n🌐 https://reservascmc.squareweb.app/`
+      `📅 *Suas próximas reservas:*\n\n${linhas}\n\n🌐 https://reservascmc2026.squareweb.app/`
     );
     return;
   }
@@ -488,7 +488,7 @@ async function handleMessage(client, message) {
     ).join('\n');
 
     await client.sendMessage(message.from,
-      `📅 *Próximas reservas:*\n\n${linhas}\n\n🌐 https://reservascmc.squareweb.app/`
+      `📅 *Próximas reservas:*\n\n${linhas}\n\n🌐 https://reservascmc2026.squareweb.app/`
     );
     return;
   }
