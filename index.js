@@ -5,12 +5,16 @@ import makeWASocket, {
   makeCacheableSignalKeyStore,
   Browsers,
 } from '@whiskeysockets/baileys';
-import qrcode from 'qrcode-terminal';
+import qrcodeTerminal from 'qrcode-terminal';
+import qrcode from 'qrcode';
 import express from 'express';
-import { createReadStream, readFile, existsSync, mkdirSync } from 'fs';
+import { readFile, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { handleMessage, iniciarAvisos } from './src/handler.js';
+import { createAuthPageMiddleware } from './src/authPage.js';
+import { createAuthCredentialsManager } from './src/authCredentials.js';
+import * as botStatus from './src/botStatus.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -20,22 +24,42 @@ process.on('unhandledRejection', (err) => console.error('[ERRO] Promise:', err))
 /* ========== EXPRESS ========== */
 
 const app = express();
+app.use(express.json());
 app.use(express.static(join(__dirname, 'public')));
 
 app.get('/', (_req, res) => res.sendFile(join(__dirname, 'public', 'reservas.html')));
 app.get('/health', (_req, res) => res.status(200).send('ok'));
 
 app.get('/api/reservas', (_req, res) => {
-  readFile(join(__dirname, 'public/reservas.json'), 'utf8', (err, data) => {
+  readFile(join(__dirname, 'data/reservas.json'), 'utf8', (err, data) => {
     if (err) return res.status(500).json({ error: 'Erro ao carregar reservas' });
-    try { res.json(JSON.parse(data)); }
+    try {
+      const reservas = JSON.parse(data);
+      const publico = reservas.map(({ numero, ...r }) => r);
+      res.json(publico);
+    }
     catch { res.status(500).json({ error: 'JSON inválido' }); }
   });
 });
 
 app.get('/api/status', (_req, res) => res.json({ online: isConnected }));
 
+/* ========== PÁGINA OCULTA DE AUTENTICAÇÃO ========== */
+
 const PORT = Number(process.env.PORT || 3000);
+
+const credentialsManager = createAuthCredentialsManager({
+  onRotate: ({ path: authPath, password }) => {
+    const host = process.env.PUBLIC_URL || `http://localhost:${PORT}`;
+    console.log('[AUTH] Bot desconectado. Acesse para reautenticar:');
+    console.log(`[AUTH] URL: ${host}${authPath}`);
+    console.log(`[AUTH] Senha: ${password}`);
+    console.log('[AUTH] Válida por 30 minutos.');
+  },
+});
+
+app.use(createAuthPageMiddleware({ credentialsManager }));
+
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`[SITE] Servidor rodando em http://0.0.0.0:${PORT}`);
   startBot();
@@ -91,19 +115,32 @@ async function startBot() {
 
       if (qr) {
         console.log('[STATUS] Escaneie o QR Code abaixo:');
-        qrcode.generate(qr, { small: true });
+        qrcodeTerminal.generate(qr, { small: true });
         retryCount = 0;
+
+        try {
+          const dataUrl = await qrcode.toDataURL(qr);
+          botStatus.setQr(dataUrl);
+        } catch (e) {
+          console.error('[BOT] Erro ao gerar QR Code para a página oculta:', e.message);
+        }
+        credentialsManager.onDisconnected();
       }
 
       if (connection === 'open') {
         console.log('[STATUS] BOT WHATSAPP ONLINE E PRONTO ✓');
         isConnected = true;
+        botStatus.setConnected(true);
+        credentialsManager.onConnected();
         retryCount = 0;
         iniciarAvisos(clientAdapter);
       }
 
       if (connection === 'close') {
         isConnected = false;
+        botStatus.setConnected(false);
+        credentialsManager.onDisconnected();
+
         const code = lastDisconnect?.error?.output?.statusCode;
         const shouldReconnect = code !== DisconnectReason.loggedOut;
 
@@ -177,6 +214,7 @@ setInterval(async () => {
   if (memMB > 450 && sock) {
     console.warn(`[ALERTA] RAM alta (${memMB}MB). Reconectando...`);
     isConnected = false;
+    botStatus.setConnected(false);
     try { sock.end(undefined); } catch (_) {}
     setTimeout(startBot, 5000);
   }

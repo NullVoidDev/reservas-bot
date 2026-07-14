@@ -106,9 +106,9 @@ function isPastDate(d, m, a) {
 
 // ==== Persistência com mutex para evitar race condition ====
 
-const publicDir = path.join(__dirname, '../public');
-if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir, { recursive: true });
-const dbPath = path.join(publicDir, 'reservas.json');
+const dataDir = path.join(__dirname, '../data');
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+const dbPath = path.join(dataDir, 'reservas.json');
 
 let _writeLock = Promise.resolve();
 

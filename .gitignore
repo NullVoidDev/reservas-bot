@@ -1,8 +1,11 @@
 node_modules/
 .wwebjs_auth/
 .wwebjs_cache/
+auth_info/
+data/
 *.log
 .DS_Store
 preview-server.js
 skills/
 .claude/
+graphify-out/
